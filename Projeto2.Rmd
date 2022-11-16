@@ -1,0 +1,437 @@
+---
+title: "Modelo de Classificação em R"
+author: "Carlos Augusto Schneider"
+date: "19/10/2022"
+output: pdf_document
+---
+
+## **ETAPA 1 - Carregamento e preparação do dataframe**
+
+
+Definindo o diretório de trabalho:
+```{r echo=TRUE, message=FALSE,warning=FALSE}
+setwd("/home/carlos/FCD/BigDataRAzure/projetos/projeto2")
+getwd()
+
+```
+
+Carregando os pacotes exigidos
+
+```{r echo=TRUE, message=FALSE,warning=FALSE}
+
+library(RWeka)
+library(tidyverse)
+library(corrgram)
+library(caret)
+library(ROSE)
+library(corrgram)
+library(naivebayes)
+library(kernlab)
+library(h2o)
+library(ggbeeswarm)
+library(kableExtra)
+library(tinytex)
+```
+
+Carregando o dataset
+
+
+```{r echo=TRUE,include=FALSE,message=FALSE,warning=FALSE}
+
+df <- read.arff("Acoustic_Extinguisher_Fire_Dataset.arff")
+View(df)
+dim(df)
+str(df)
+sapply(df, unique)
+
+```
+
+Descrição das variáveis
+
+
+**Size**: Tamanho da lata de combustível a incendiar em cm. Apesar de numérica, também é uma variável fator;
+1 = 7cm, 2 = 12cm, 3 = 14cm, 4 = 16cm, 5 = 20c, 6 = Metade cheia GLP, 7 = Totalmente Cheia GLP. 
+
+**Fuel**: Tipo de combustível testado para extinção do incêncio;
+
+**Distance:**: Distância do combustível incendiado para o mecanismo extintor em cm;
+
+**Desibel:** Volume Sonoro do mecanismo extintor em db;
+
+**Airflow:** Fluxo de ar resultante das ondas sonoras (m/s);
+
+**Frequency:** Frequência da onda sonora (Hz);
+
+**Class**: Status (1 = incêndio extinto ou 0 = não extinto).
+
+
+Verificando a existência de valores não disponíveis (NA)
+```{r echo=TRUE, message=FALSE,warning=FALSE}
+
+any(is.na(df))
+
+```
+
+Como a variável Size tem especificações diferentes em relação ao tipo de combustível (conforme descrição),
+decidimos convertê-la para o tipo fator.
+Vamos também colocar a variável target na 1ª posição do dataframe.
+
+```{r echo=TRUE, message=FALSE,warning=FALSE}
+
+colnames(df)
+df1 <- df %>%
+  select(CLASS,1,2,3,4,5,6)
+view(df1)
+
+df1$SIZE <- as.factor(df1$SIZE) 
+str(df1)
+
+```
+
+## **ETAPA 2 - Análise Exploratória**
+
+Histogramas das variáveis numéricas
+
+```{r echo=TRUE, message=FALSE,warning=FALSE}
+
+ggplot(df1, aes(x = FREQUENCY)) +
+  geom_histogram(binwidth = 0.5, fill = "darksalmon") +
+  ggtitle("FREQUENCY")
+
+
+ggplot(df1, aes(x = DESIBEL)) +
+  geom_histogram(binwidth = 0.5, fill = "darksalmon") +
+  ggtitle("DESIBEL")
+
+
+ggplot(df1, aes(x = DISTANCE)) +
+  geom_histogram(binwidth = 2.0, fill = "darksalmon") +
+  ggtitle("DISTANCE")
+
+
+ggplot(df1, aes(x = AIRFLOW)) +
+  geom_histogram(binwidth = 0.5, fill = "darksalmon") +
+  ggtitle("AIRFLOW")
+
+```
+
+Chama a atenção o grande número de observações iguais a zero da variável AIRFLOW.
+
+```{r echo=TRUE, message=FALSE,warning=FALSE}
+nrow(filter(df1,AIRFLOW == 0))
+
+```
+
+
+Vamos criar uma coluna do tipo fator, indicando "sim" para AIRFLOW = 0  e "nao" para AIRFLOW diferente
+de 0 e relacionar às outras variáveis do dataframe. Será uma variável do tipo fator.
+
+```{r echo=TRUE, message=FALSE,warning=FALSE}
+
+indice <- which(df1$AIRFLOW == 0)
+df1$AFzero <- "nao"
+df1[indice,which(colnames(df1)=="AFzero")] = "sim"
+df1$AFzero <- as.factor(df1$AFzero)
+
+rm(indice)
+
+```
+
+
+Analisando as variáveis numéricas
+
+```{r echo=TRUE, message=FALSE,warning=FALSE}
+ggplot(df1, aes(x = AIRFLOW, y = FREQUENCY, color = CLASS)) +
+  geom_point() +
+  ggtitle("FLUXO DE AR X FREQUÊNCIA SONORA")+
+  theme(legend.position = c(0.9,0.1), legend.background = element_rect(fill = "#ccccff"))
+```
+A extinção do incêndio está fortemente associada a níveis maiores de fluxo de ar.
+Quanto à frequência, percebe-se que frequências próximas de zero ou superiores a 60 hz 
+geram menos corrente de ar.
+
+```{r echo=TRUE, message=FALSE,warning=FALSE}
+
+ggplot(df1, aes(x = AIRFLOW, y = DESIBEL, color = CLASS)) +
+  geom_point() +
+  ggtitle("FLUXO DE AR X VOLUME SONORO")+
+  theme(legend.position = c(0.9,0.1), legend.background = element_rect(fill = "#ccccff"))
+
+```
+Já em relação ao volume, percebe-se claramente que volumes maiores geram maior fluxo de ar, não 
+havendo incêndios extintos com volumes abaixo de 80db.
+
+```{r echo=TRUE, message=FALSE,warning=FALSE}
+ggplot(df1, aes(x = DISTANCE, y = AIRFLOW, group = DISTANCE)) +
+  geom_boxplot(fill = "#ff33ff") +
+  ggtitle("FLUXO DE AR X DISTÂNCIA")
+```
+Em relação ao aumento da distância, percebe-se que o fluxo de ar claramente diminui.
+
+```{r echo=TRUE, message=FALSE,warning=FALSE}
+corrgram(df1[4:7],cor.method = "pearson", panel = panel.cor)
+```
+A correlação do volume sonoro com a fluxo de ar é positiva (0,38) e a correlação da frequência com o fluxo de ar é negativa (-0,21). A correlação mais importante é do fluxo de ar com a distância (correlação negativa de -0,71).
+
+```{r echo=TRUE, message=FALSE,warning=FALSE}
+ggplot(df1, aes(x = FREQUENCY, y = DESIBEL, color = CLASS)) +
+  geom_point() +
+  ggtitle("FREQUENCIA X VOLUME SONORO")+
+  theme(legend.position = c(0.9,0.1), legend.background = element_rect(fill = "#ccccff"))
+```
+Aqui fica bem claro que a maior parte dos sucessos para extinção do incêndio situam-se em frequências
+entre 20 e 50 Hz com volume alto (acima de 90 db).
+
+```{r echo=TRUE, message=FALSE,warning=FALSE}
+
+tabela <- prop.table(table(df1$CLASS,df1$AFzero))*100
+kable(tabela,caption = "Resultados - Modelo AutoML",format = "pipe")
+rm(tabela)
+
+```
+Percebemos que em uma pequena parcela das observações, houve extinção do incêndio mesmo com fluxo de ar igual
+a zero (0,10% das observações do dataset, aproximadamente).
+
+Gerando boxplots para análise das variáveis fator:
+
+```{r echo=TRUE, message=FALSE,warning=FALSE}
+ggplot(df1, aes(x = CLASS, y = DISTANCE))+
+  geom_boxplot(fill = "#0066FF") +
+  ggtitle("CLASSE x DISTÂNCIA")
+```
+Percebe-se aqui que há impacto claro da distância do aparato ao incêndio quanto ao sucesso na extinção.
+
+```{r echo=TRUE, message=FALSE,warning=FALSE}
+ggplot(df1, aes(x = CLASS, y = SIZE, group = CLASS, fill = CLASS))+
+  geom_boxplot()+
+  ggtitle("CLASSE x TAMANHO")
+```
+Percebe-se que incêndios de tamanhos menores tem maior sucesso de extinção, mas o impacto dessa variável
+parece ser menor que o da variável DISTANCE.
+
+```{r echo=TRUE, message=FALSE,warning=FALSE}
+tabela <- prop.table(table("Combustível" =  df1$FUEL,"Resultado" = df1$CLASS))*100
+kable(tabela,caption = "Resultados - Modelo AutoML",format = "pipe")
+rm(tabela)
+
+```
+Percebe-se que alguns combustíveis são menos suscetíveis ao sistema extintor (tiner e querosene), pois têm
+maior percentual de fracassos que sucessos.
+
+## **ETAPA 3 - Treinamento e validação do modelo**
+
+Gerando os dados de treino e de teste do modelo
+
+
+```{r echo=TRUE, message=FALSE,warning=FALSE}
+set.seed(123)
+training.samples <- df1$CLASS %>%
+  createDataPartition(p = 0.7, list = FALSE)
+train.data  <- df1[training.samples, ]
+test.data <- df1[-training.samples, ]
+```
+
+Os datasets estão balanceados.
+```{r echo=TRUE, message=FALSE,warning=FALSE}
+
+tabela1 <- prop.table(table(train.data$CLASS))*100
+kable(tabela1,caption = "Resultados - Modelo AutoML",format = "pipe")
+tabela2 <- prop.table(table(test.data$CLASS))*100
+kable(tabela2,caption = "Resultados - Modelo AutoML",format = "pipe")
+rm(tabela1,tabela2)
+
+```
+
+Usando "cross validation" - validação cruzada, neste caso com 5 combinações diferentes para seleção do melhor modelo.
+
+```{r echo=TRUE, message=FALSE,warning=FALSE}
+control1 <- trainControl(method = "cv", number = 5)
+```
+
+**Modelo Random Forest**
+
+```{r echo=TRUE, message=FALSE,warning=FALSE}
+model_rf1 <- train(CLASS ~ ., 
+                   seed = 123,
+                   data = train.data, 
+                   method = "rf", 
+                   trControl = control1, 
+                   metric = "Accuracy")
+```
+
+**Modelo Naive_Bayes**
+
+```{r echo=TRUE, message=FALSE,warning=FALSE}
+model_nb1 <- train(CLASS ~ ., 
+                   seed = 123,
+                   data = train.data, 
+                   method = "naive_bayes", 
+                   trControl = control1, 
+                   metric = "Accuracy")
+```
+
+**Modelo SVM (Support Vector Machine)**
+
+```{r echo=TRUE, message=FALSE,warning=FALSE}
+model_svm1 <- train(CLASS ~ .,
+                  seed = 123,
+                  data = train.data, 
+                  method = "svmLinear", 
+                  trControl = control1, 
+                  metric = "Accuracy")
+```
+
+Avaliando os modelos
+
+```{r echo=TRUE, message=FALSE,warning=FALSE}
+model_rf1$results #R2 (max Accuracy 0,96) 
+model_nb1$results #R2 (max Accuracy 0,86)
+model_svm1$results # (Accuracy 0,90)
+```
+
+Modelo Random Forest teve a melhor acurácia (0,96), seguido pelo modelo SVM (0,90) e pelo Naive Bayes (0,86).
+Vamos utilizar o modelo Random Forest para fazer as previsões:
+
+```{r echo=TRUE, message=FALSE,warning=FALSE}
+previsoes <- predict(model_rf1, test.data)
+```
+
+Vamos verificar a acurácia
+
+```{r echo=TRUE, message=FALSE,warning=FALSE}
+caret::confusionMatrix(test.data$CLASS, previsoes, positive = '1')
+```
+Accuracy de 0,9677
+
+
+Calculando o Score AUC
+
+```{r echo=TRUE, message=FALSE,warning=FALSE}
+roc.curve(test.data$CLASS, previsoes, plotit = T, col = "#6600cc")
+```
+
+
+## **ETAPA 4 - Modelo Auto ML**
+
+Vamos elaborar um modelo AutoML com o pacote H20:
+Iniciando o H2O
+
+
+```{r echo=TRUE, message=FALSE,warning=FALSE, include=FALSE}
+h2o.init()
+```
+
+Convertendo os dados para o formato H2O
+
+```{r echo=TRUE, message=FALSE,warning=FALSE}
+h2o_frame <- as.h2o(df1)
+tabela <- head(h2o_frame)
+kable(tabela,caption = "H2O dataframe",format = "pipe")
+rm(tabela)
+
+```
+
+Split dos dados em treino e teste
+
+```{r echo=TRUE, message=FALSE,warning=FALSE}
+h2o_frame_split <- h2o.splitFrame(h2o_frame, ratios = 0.70, seed = 123)
+
+```
+
+Não vamos fazer balanceamento de classes (não será necessário). Para avaliação de modelos, o H2O utiliza como padrão a avaliação cruzada com 5 amostras (folds = 5). Tivemos ainda que definir também um parâmetro para limite de tempo de processamento (**max_runtime_secs = 60 \* 10**) e um limite no número de algoritmos de Machine Learning para avaliação **(XGBoost, DRF, Deeplearning)**, devido à limitações de capacidade de processamento de dados e memória. A métrica escolhida para avaliação é AUC (area sob a curva).
+
+```{r echo=TRUE, message=FALSE,w arning=FALSE}
+modelo_automl <- h2o.automl(y = 'CLASS',
+                            seed = 123,
+                            balance_classes = FALSE,
+                            training_frame = h2o_frame_split[[1]],
+                            leaderboard_frame = h2o_frame_split[[2]],
+                            max_runtime_secs = 60 * 10, 
+                            include_algos = c('XGBoost', 'DRF', 'DeepLearning'),
+                            sort_metric = "auc")
+```
+
+Extraindo o leaderboard
+
+```{r echo=TRUE, message=FALSE,warning=FALSE}
+leaderboard_automl <- as.data.frame(modelo_automl@leaderboard)
+leaderboard_automl
+```
+
+Extraindo o líder (modelo com melhor performance - XGBoost)
+
+```{r echo=TRUE, message=FALSE,warning=FALSE}
+lider_automl <- modelo_automl@leader
+
+```
+
+Verificando o desempenho do modelo na previsão dos dados de teste.
+
+```{r echo=TRUE, message=FALSE,warning=FALSE}
+predicted <- h2o.predict(lider_automl,h2o_frame_split[[2]])
+
+performanceH20 <- h2o.performance(lider_automl,h2o_frame_split[[2]])
+performanceH20
+
+tabela <- h2o.confusionMatrix(performanceH20)
+kable(tabela,caption = "Resultados - Modelo AutoML",format = "pipe")
+h2o.accuracy(performanceH20,thresholds = "max")
+rm(tabela)
+
+#Métrica AUC
+h2o.auc(performanceH20)
+plot(performanceH20,type='roc')
+
+```
+
+O desempenho do modelo AutoML foi superior ao modelo manual (0,98 contra 0,96 de acurácia).
+No entanto os dois modelos foram excelentes.
+
+
+Para o melhor modelo extraímos a contribuição de cada variável para as previsões.
+Os valores extraídos são chamados de valores SHAP.
+Usamos os dados de teste.
+
+```{r echo=TRUE, message=FALSE,warning=FALSE}
+var_contrib <- predict_contributions.H2OModel(lider_automl, h2o_frame_split[[2]])
+```
+
+Preparando o dataframe
+
+```{r echo=TRUE, message=FALSE,warning=FALSE}
+df_var_contrib <- var_contrib %>%
+  as.data.frame() %>%
+  select(-BiasTerm) %>%
+  gather(feature, shap_value) %>%
+  group_by(feature) %>%
+  mutate(shap_importance = mean(abs(shap_value)), shap_force = mean(shap_value)) %>% 
+  ungroup()
+```
+
+Plot da importância de cada variável para prever a variável alvo
+
+
+```{r echo=TRUE, message=FALSE,warning=FALSE}
+df_var_contrib %>% 
+  select(feature, shap_importance) %>%
+  distinct() %>% 
+  ggplot(aes(x = reorder(feature,shap_importance), y = shap_importance)) +
+  geom_col(fill = '#990066') +
+  coord_flip() +
+  xlab(NULL) +
+  ylab("Valor Médio das Métricas SHAP") +
+  theme_minimal(base_size = 15)
+```
+
+Verificamos assim a importância de cada variável para o modelo AutoML.
+Desligando o H2O
+
+```{r echo=TRUE, message=FALSE,warning=FALSE, include=FALSE}
+h2o.shutdown()
+```
+
+
+
+
+
+
